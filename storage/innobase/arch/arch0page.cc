@@ -84,8 +84,6 @@ void Arch_Reset_File::init() {
 Arch_File_Ctx Arch_Group::s_dblwr_file_ctx;
 
 Arch_Group::~Arch_Group() {
-  ut_ad(!m_is_active);
-
   m_file_ctx.close();
 
   if (m_active_file.m_file != OS_FILE_CLOSED) {
@@ -599,8 +597,8 @@ bool Arch_File_Ctx::validate_stop_point_in_file(Arch_Group *group,
   byte buf[ARCH_PAGE_BLK_SIZE];
 
   /* Read the entire reset block. */
-  dberr_t err =
-      os_file_read(request, m_path_name, file, buf, offset, ARCH_PAGE_BLK_SIZE);
+  dberr_t err = os_file_read_no_error_handling(
+      request, m_path_name, file, buf, offset, ARCH_PAGE_BLK_SIZE, nullptr);
 
   if (err != DB_SUCCESS) {
     return (false);
@@ -628,8 +626,8 @@ bool Arch_File_Ctx::validate_reset_block_in_file(pfs_os_file_t file,
   byte buf[ARCH_PAGE_BLK_SIZE];
 
   /* Read the entire reset block. */
-  dberr_t err =
-      os_file_read(request, m_path_name, file, buf, 0, ARCH_PAGE_BLK_SIZE);
+  dberr_t err = os_file_read_no_error_handling(request, m_path_name, file, buf,
+                                               0, ARCH_PAGE_BLK_SIZE, nullptr);
 
   if (err != DB_SUCCESS) {
     return (false);
@@ -1718,7 +1716,7 @@ void Arch_Page_Sys::track_page(buf_page_t *bpage, lsn_t track_lsn,
       m_state = ARCH_STATE_ABORT;
       arch_oper_mutex_exit();
       ut_d(ut_error);
-      ut_o(return);
+      ut_o(return );
     }
 
     cur_blk = m_data.get_block(&m_write_pos, ARCH_DATA_BLOCK);
@@ -1898,14 +1896,19 @@ int Arch_Page_Sys::get_pages(MYSQL_THD thd, Page_Track_Callback cbk_func,
       auto data_len = Arch_Block::get_data_len(header_buf);
       bytes_left = data_len + ARCH_PAGE_BLK_HEADER_LENGTH;
 
-      ut_ad(bytes_left <= ARCH_PAGE_BLK_SIZE);
-      ut_ad(block_stop_lsn != LSN_MAX);
+      if (bytes_left > ARCH_PAGE_BLK_SIZE || block_stop_lsn == LSN_MAX) {
+        err = ER_PAGE_TRACKING_RANGE_NOT_TRACKED;
+        break;
+      }
 
       bytes_left -= cur_pos.m_offset;
 
       if (data_len == 0 || cur_pos.m_block_num == last_pos.m_block_num ||
           block_stop_lsn > stop_id) {
-        ut_ad(block_stop_lsn >= stop_id);
+        if (block_stop_lsn < stop_id) {
+          err = ER_PAGE_TRACKING_RANGE_NOT_TRACKED;
+          break;
+        }
         stop_id = block_stop_lsn;
         last_block = true;
       }
@@ -2938,8 +2941,8 @@ int Arch_Group::read_from_file(Arch_Page_Pos *read_pos, uint read_len,
   request.disable_compression();
   request.clear_encrypted();
 
-  auto db_err =
-      os_file_read(request, file_name, file, read_buff, offset, read_len);
+  auto db_err = os_file_read_no_error_handling(
+      request, file_name, file, read_buff, offset, read_len, nullptr);
 
   os_file_close(file);
 
@@ -3056,7 +3059,9 @@ int Arch_Page_Sys::fetch_group_within_lsn_range(lsn_t &start_id, lsn_t &stop_id,
   auto latest_stop_lsn = m_latest_stop_lsn;
   arch_oper_mutex_exit();
 
-  ut_ad(latest_stop_lsn != LSN_MAX);
+  if (latest_stop_lsn == LSN_MAX) {
+    return (ER_PAGE_TRACKING_RANGE_NOT_TRACKED);
+  }
 
   if (start_id == 0 || stop_id == 0) {
     if (m_current_group == nullptr || !m_current_group->is_active()) {
@@ -3065,7 +3070,9 @@ int Arch_Page_Sys::fetch_group_within_lsn_range(lsn_t &start_id, lsn_t &stop_id,
 
     *group = m_current_group;
 
-    ut_ad(m_last_lsn != LSN_MAX);
+    if (m_last_lsn == LSN_MAX) {
+      return (ER_PAGE_TRACKING_RANGE_NOT_TRACKED);
+    }
 
     start_id = (start_id == 0) ? m_last_lsn : start_id;
     stop_id = (stop_id == 0) ? latest_stop_lsn : stop_id;

@@ -454,17 +454,18 @@ dberr_t Arch_File_Ctx::open_next(lsn_t start_lsn, uint64_t file_offset,
 }
 
 dberr_t Arch_File_Ctx::read(byte *to_buffer, uint64_t offset, uint size) {
-  ut_ad(offset + size <= m_size);
   ut_ad(!is_closed());
+
+  if (offset + size > m_size) {
+    return DB_IO_ERROR;
+  }
 
   IORequest request(IORequest::READ);
   request.disable_compression();
   request.clear_encrypted();
 
-  auto err =
-      os_file_read(request, m_path_name, m_file, to_buffer, offset, size);
-
-  return (err);
+  return os_file_read_no_error_handling(request, m_path_name, m_file,
+                                        to_buffer, offset, size, nullptr);
 }
 
 dberr_t Arch_File_Ctx::resize_and_overwrite_with_zeros(uint64_t file_size) {

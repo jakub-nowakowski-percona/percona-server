@@ -682,8 +682,6 @@ dberr_t Arch_File_Ctx::Recovery::parse_reset_points(
   if (file_index != block_num) {
     /* This means there was no reset for this file and hence the
     reset block was not flushed. */
-
-    ut_ad(ut::is_zeros(buf, ARCH_PAGE_BLK_SIZE));
     info.m_reset_pos.init();
     info.m_reset_pos.m_block_num = file_index;
     return err;
@@ -702,11 +700,13 @@ dberr_t Arch_File_Ctx::Recovery::parse_reset_points(
   reset_file.m_file_index = file_index;
 
   if (data_len != 0) {
+    if (data_len < ARCH_PAGE_FILE_HEADER_RESET_LSN_SIZE +
+                       ARCH_PAGE_FILE_HEADER_RESET_POS_SIZE) {
+      return DB_CORRUPTION;
+    }
+
     uint length = 0;
     byte *buf1 = buf + ARCH_PAGE_BLK_HEADER_LENGTH;
-
-    ut_ad(data_len >= ARCH_PAGE_FILE_HEADER_RESET_LSN_SIZE +
-                          ARCH_PAGE_FILE_HEADER_RESET_POS_SIZE);
 
     reset_file.m_lsn = mach_read_from_8(buf1);
     length += ARCH_PAGE_FILE_HEADER_RESET_LSN_SIZE;
@@ -714,8 +714,10 @@ dberr_t Arch_File_Ctx::Recovery::parse_reset_points(
     Arch_Point start_point;
     Arch_Page_Pos pos;
 
-    while (length != data_len) {
-      ut_ad((data_len - length) % ARCH_PAGE_FILE_HEADER_RESET_POS_SIZE == 0);
+    while (length < data_len) {
+      if ((data_len - length) < ARCH_PAGE_FILE_HEADER_RESET_POS_SIZE) {
+        return DB_CORRUPTION;
+      }
 
       pos.m_block_num = mach_read_from_2(buf1 + length);
       length += ARCH_PAGE_FILE_HEADER_RESET_BLOCK_NUM_SIZE;
@@ -724,6 +726,11 @@ dberr_t Arch_File_Ctx::Recovery::parse_reset_points(
       length += ARCH_PAGE_FILE_HEADER_RESET_BLOCK_OFFSET_SIZE;
 
       start_point.lsn = m_file_ctx.fetch_reset_lsn(pos.m_block_num);
+
+      if (start_point.lsn == LSN_MAX) {
+        return DB_CORRUPTION;
+      }
+
       start_point.pos = pos;
 
       reset_file.m_start_point.push_back(start_point);
@@ -739,23 +746,20 @@ dberr_t Arch_File_Ctx::Recovery::parse_reset_points(
 
 lsn_t Arch_File_Ctx::fetch_reset_lsn(uint64_t block_num) {
   ut_ad(!is_closed());
-  ut_ad(Arch_Block::get_file_index(block_num, ARCH_DATA_BLOCK) == m_index);
+
+  if (Arch_Block::get_file_index(block_num, ARCH_DATA_BLOCK) != m_index) {
+    return LSN_MAX;
+  }
 
   byte buf[ARCH_PAGE_BLK_SIZE];
 
   auto offset = Arch_Block::get_file_offset(block_num, ARCH_DATA_BLOCK);
 
-  ut_ad(offset + ARCH_PAGE_BLK_SIZE <= get_phy_size());
-
   auto err = read(buf, offset, ARCH_PAGE_BLK_HEADER_LENGTH);
 
   if (err != DB_SUCCESS) {
-    return (LSN_MAX);
+    return LSN_MAX;
   }
 
-  auto lsn = Arch_Block::get_reset_lsn(buf);
-
-  ut_ad(lsn != LSN_MAX);
-
-  return (lsn);
+  return Arch_Block::get_reset_lsn(buf);
 }
