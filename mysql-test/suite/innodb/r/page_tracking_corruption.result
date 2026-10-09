@@ -34,6 +34,25 @@ SELECT mysqlbackup_page_track_get_changed_page_count(mysqlbackup_page_track_get_
 mysqlbackup_page_track_get_changed_page_count(mysqlbackup_page_track_get_start_lsn(), mysqlbackup_page_track_get_start_lsn() + 1)
 #
 #
+# PS-11549: Active group whose last file has an empty reset block
+#
+# restart
+SELECT mysqlbackup_page_track_set(1);
+mysqlbackup_page_track_set(1)
+#
+UPDATE t1 SET b = REPEAT('z', 1000);
+Reset block of the active page-tracking file zero-filled successfully.
+#
+# Restart the server — should succeed despite the empty reset block
+#
+# restart
+#
+# Verify page tracking query does not crash after corruption
+#
+SELECT mysqlbackup_page_track_get_changed_page_count(mysqlbackup_page_track_get_start_lsn(), mysqlbackup_page_track_get_start_lsn() + 1);
+mysqlbackup_page_track_get_changed_page_count(mysqlbackup_page_track_get_start_lsn(), mysqlbackup_page_track_get_start_lsn() + 1)
+#
+#
 # Cleanup
 #
 DROP TABLE t1;

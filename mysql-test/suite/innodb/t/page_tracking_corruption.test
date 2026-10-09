@@ -113,6 +113,78 @@ EOF
 SELECT mysqlbackup_page_track_get_changed_page_count(mysqlbackup_page_track_get_start_lsn(), mysqlbackup_page_track_get_start_lsn() + 1);
 
 --echo #
+--echo # PS-11549: Active group whose last file has an empty reset block
+--echo #
+--source include/shutdown_mysqld.inc
+--force-rmdir $MYSQLD_DATADIR/#ib_archive
+--source include/start_mysqld.inc
+
+--replace_column 1 #
+SELECT mysqlbackup_page_track_set(1);
+UPDATE t1 SET b = REPEAT('z', 1000);
+
+--source include/shutdown_mysqld.inc
+
+perl;
+use File::Find;
+use strict;
+use warnings;
+
+my $datadir = $ENV{'MYSQLD_DATADIR'};
+chomp $datadir if defined $datadir;
+die "MYSQLD_DATADIR not set\n" unless defined $datadir && length $datadir;
+
+$datadir .= '/' unless $datadir =~ m{/$};
+my $archive_dir = "${datadir}#ib_archive";
+
+die "Archive directory $archive_dir not found.\n" unless -d $archive_dir;
+
+sub zero_fill {
+    my ($path, $len) = @_;
+    open(my $fh, '+<', $path) or die "Cannot open $path: $!\n";
+    binmode $fh;
+    print $fh "\0" x $len;
+    close $fh;
+}
+
+my $corrupted = 0;
+
+find(sub {
+    my $path = $File::Find::name;
+    return unless -f $path;
+
+    # Zero-fill (but keep the size of) the doublewrite buffer, so that it is
+    # initialised successfully but holds no valid block to restore from.
+    if (/^dblwr_\d+$/) {
+        zero_fill($path, -s $path);
+        return;
+    }
+
+    # Zero-fill the reset block of the active group's page-tracking file. For
+    # ib_page_0 a zero-filled block has block number 0 and data length 0, so it
+    # looks like a reset block without any reset point.
+    return unless /^ib_page_0$/ && -e "$File::Find::dir/active";
+    zero_fill($path, 16384);
+    $corrupted++;
+}, $archive_dir);
+
+die "No active ib_page_0 file found under $archive_dir.\n" if $corrupted == 0;
+
+print "Reset block of the active page-tracking file zero-filled successfully.\n";
+EOF
+
+--echo #
+--echo # Restart the server — should succeed despite the empty reset block
+--echo #
+--source include/start_mysqld.inc
+
+--echo #
+--echo # Verify page tracking query does not crash after corruption
+--echo #
+--replace_column 1 #
+SELECT mysqlbackup_page_track_get_changed_page_count(mysqlbackup_page_track_get_start_lsn(), mysqlbackup_page_track_get_start_lsn() + 1);
+
+--echo #
 --echo # Cleanup
 --echo #
 DROP TABLE t1;
