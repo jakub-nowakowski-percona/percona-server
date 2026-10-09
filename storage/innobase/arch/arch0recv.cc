@@ -538,6 +538,16 @@ dberr_t Arch_Group::recover(Arch_Recv_Group_Info &group_info,
     return err;
   }
 
+  /* Resuming an active group requires the last reset point, which the reset
+  block of a valid group always contains. */
+  if (group_info.m_active &&
+      group_info.m_last_reset_file.m_start_point.empty()) {
+    ib::error(ER_IB_MSG_17)
+        << "Page archiver: active page-tracking group " << ARCH_PAGE_DIR
+        << m_begin_lsn << " has no reset points.";
+    return DB_CORRUPTION;
+  }
+
   if (!group_info.m_active) {
     auto end_lsn = group_info.m_last_stop_lsn;
     ut_ad(end_lsn != LSN_MAX);
